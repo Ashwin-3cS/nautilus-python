@@ -28,7 +28,7 @@ jobs:
           host: ${{ secrets.TEE_EC2_HOST }}
           username: ${{ secrets.TEE_EC2_USER }}
           key: ${{ secrets.TEE_EC2_SSH_KEY }}
-          source: "Containerfile,app.py,src,requirements.txt,Makefile"
+          source: "Containerfile,entrypoint.sh,app.py,src,requirements.txt,Makefile"
           target: "~/nautilus-app/"
           overwrite: true
           rm: false
