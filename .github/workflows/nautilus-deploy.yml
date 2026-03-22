@@ -94,7 +94,7 @@ jobs:
           SSH_OPTS="-o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10"
           ssh $SSH_OPTS -i /tmp/deploy_key "$EC2_USER@$EC2_HOST" 'bash -s' << 'REMOTE'
           set -e
-          cd ~/nautilus-app && mkdir -p out
+          cd ~/nautilus-app && rm -rf out && mkdir -p out
           sudo make 2>&1 | tee out/build.log
           echo "--- PCR Measurements ---"
           cat out/nitro.pcrs || true
@@ -149,6 +149,16 @@ jobs:
           # Kill any stale socat processes
           sudo pkill -f "socat.*5000" 2>/dev/null || true
 
+          # Bridge wrapper resolves CID dynamically on each (re)start
+          sudo tee /usr/local/bin/nautilus-bridge.sh > /dev/null <<'BRIDGEOF'
+          #!/bin/bash
+          CID=$(nitro-cli describe-enclaves | jq -r '.[0].EnclaveCID // empty')
+          if [ -z "$CID" ]; then echo "No enclave running"; exit 1; fi
+          echo "Bridging TCP:5000 <-> VSOCK:$CID:5000"
+          exec /usr/bin/socat TCP-LISTEN:5000,reuseaddr,fork VSOCK-CONNECT:$CID:5000
+          BRIDGEOF
+          sudo chmod +x /usr/local/bin/nautilus-bridge.sh
+
           # Setup bridge service (TCP:5000 <-> VSOCK:5000)
           sudo tee /etc/systemd/system/nautilus-bridge.service > /dev/null <<EOF
           [Unit]
@@ -156,7 +166,7 @@ jobs:
           After=network.target
 
           [Service]
-          ExecStart=/usr/bin/socat TCP-LISTEN:5000,reuseaddr,fork VSOCK-CONNECT:$CID:5000
+          ExecStart=/usr/local/bin/nautilus-bridge.sh
           Restart=always
           RestartSec=2
 
