@@ -92,7 +92,7 @@ RUN chmod 755 initramfs/usr/local/bin/python3 && \
     mkdir -p initramfs/usr/lib && \
     for f in initramfs/lib/*.so*; do \
         bn=$(basename "$f"); \
-        [ ! -e "initramfs/usr/lib/$bn" ] && ln -s "/lib/$bn" "initramfs/usr/lib/$bn"; \
+        [ ! -e "initramfs/usr/lib/$bn" ] && ln -s "/lib/$bn" "initramfs/usr/lib/$bn" || true; \
     done && \
     echo "=== initramfs /lib/ ===" && ls -la initramfs/lib/ && \
     echo "=== initramfs /usr/lib/ ===" && ls -la initramfs/usr/lib/
