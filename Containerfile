@@ -104,9 +104,17 @@ COPY --from=python-build /app/src initramfs/app/src/
 # Run script: start socat bridge then exec Python app
 COPY <<-'RUNEOF' initramfs/run.sh
 #!/bin/sh
+# Setup loopback interface (enclave has no networking by default)
+busybox ip addr add 127.0.0.1/32 dev lo
+busybox ip link set dev lo up
+echo "127.0.0.1   localhost" > /etc/hosts
+
 export LD_LIBRARY_PATH=/lib:/usr/lib
 export PYTHONPATH=/app:/usr/local/lib/python3.12/site-packages
 export PYTHONHOME=/usr/local
+export ENCLAVE_MODE=true
+
+# VSOCK bridge: forward VSOCK:5000 -> TCP:localhost:5000
 socat VSOCK-LISTEN:5000,fork,reuseaddr TCP:localhost:5000 &
 exec /usr/local/bin/python3 /app/app.py
 RUNEOF
