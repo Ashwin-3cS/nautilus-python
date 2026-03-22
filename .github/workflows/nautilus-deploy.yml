@@ -119,6 +119,10 @@ jobs:
           sudo nitro-cli terminate-enclave --all      || true
           sleep 2
 
+          # Re-reserve CPUs after Docker build may have disrupted the pool
+          sudo systemctl restart nitro-enclaves-allocator.service
+          sleep 2
+
           # Launch enclave
           sudo nitro-cli run-enclave \
             --cpu-count 2 \
