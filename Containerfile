@@ -61,7 +61,6 @@ RUN mkdir -p initramfs/etc/ssl/certs initramfs/tmp
 # Core system
 COPY --from=core-busybox . initramfs
 COPY --from=core-musl . initramfs
-COPY --from=core-zlib . initramfs
 COPY --from=core-ca-certificates /etc/ssl/certs initramfs/etc/ssl/certs
 COPY --from=user-nit /bin/init initramfs
 
@@ -71,6 +70,10 @@ COPY --from=user-socat /bin/socat initramfs/
 # Python standalone binary
 COPY --from=python-build /app/dist/nautilus-server initramfs/nautilus-server
 RUN chmod +x initramfs/nautilus-server
+
+# Shared libs needed by PyInstaller binary (from Alpine build for ABI compatibility)
+COPY --from=python-build /usr/lib/libz.so* initramfs/usr/lib/
+RUN chmod 755 initramfs/usr/lib/libz.so*
 
 # Run script: start socat bridge then exec Python server
 COPY <<-'RUNEOF' initramfs/run.sh
