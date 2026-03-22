@@ -9,6 +9,7 @@
 # --- StageX base images (reproducible builds) ---
 FROM stagex/core-ca-certificates@sha256:d135f1189e9b232eb7316626bf7858534c5540b2fc53dced80a4c9a95f26493e AS core-ca-certificates
 FROM stagex/core-gcc@sha256:964ffd3793c5a38ca581e9faefd19918c259f1611c4cbf5dc8be612e3a8b72f5 AS core-gcc
+FROM stagex/core-openssl@sha256:d6487f0cb15f4ee02b420c717cb9abd85d73043c0bb3a2c6ce07688b23c1df07 AS core-openssl
 FROM stagex/core-zlib@sha256:06f5168e20d85d1eb1d19836cdf96addc069769b40f8f0f4a7a70b2f49fc18f8 AS core-zlib
 FROM stagex/core-musl@sha256:d9af23284cca2e1002cd53159ada469dfe6d6791814e72d6163c7de18d4ae701 AS core-musl
 FROM stagex/core-libunwind@sha256:eb66122d8fc543f5e2f335bb1616f8c3a471604383e2c0a9df4a8e278505d3bc AS core-libunwind
@@ -43,6 +44,7 @@ COPY --from=core-busybox . /
 COPY --from=core-musl . /
 COPY --from=core-libunwind . /
 COPY --from=core-gcc . /
+COPY --from=core-openssl . /
 COPY --from=core-zlib . /
 COPY --from=core-ca-certificates . /
 COPY --from=user-eif_build . /
