@@ -73,15 +73,17 @@ COPY --from=core-busybox . initramfs
 COPY --from=core-ca-certificates /etc/ssl/certs initramfs/etc/ssl/certs
 COPY --from=user-nit /bin/init initramfs
 
-# socat for VSOCK bridging
-COPY --from=user-socat /bin/socat initramfs/
+# socat for VSOCK bridging (must be in /bin/ for PATH)
+COPY --from=user-socat /bin/socat initramfs/bin/socat
 
 # Python runtime — use Alpine's musl + Python (self-consistent set)
 COPY --from=python-build /collected-libs/ initramfs/lib/
 COPY --from=python-build /usr/local/bin/python3.12 initramfs/usr/local/bin/python3
+# Stdlib .py files + C extension modules (lib-dynload/*.so) + site-packages (pynacl, cbor2)
 COPY --from=python-build /usr/local/lib/python3.12 initramfs/usr/local/lib/python3.12
 RUN chmod 755 initramfs/usr/local/bin/python3 && \
-    chmod 755 initramfs/lib/*
+    chmod 755 initramfs/lib/* && \
+    find initramfs/usr/local/lib/python3.12/lib-dynload -name '*.so' -exec chmod 755 {} \;
 
 # Python application
 COPY --from=python-build /app/app.py initramfs/app/
