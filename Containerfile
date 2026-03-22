@@ -61,6 +61,7 @@ RUN mkdir -p initramfs/etc/ssl/certs initramfs/tmp
 # Core system
 COPY --from=core-busybox . initramfs
 COPY --from=core-musl . initramfs
+COPY --from=core-zlib . initramfs
 COPY --from=core-ca-certificates /etc/ssl/certs initramfs/etc/ssl/certs
 COPY --from=user-nit /bin/init initramfs
 
