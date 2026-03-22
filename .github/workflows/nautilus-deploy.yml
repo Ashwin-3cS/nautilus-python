@@ -101,7 +101,7 @@ jobs:
           REMOTE
           rm -f /tmp/deploy_key
 
-      - name: Terminate old enclave
+      - name: Launch enclave and setup bridge
         env:
           EC2_HOST: ${{ secrets.TEE_EC2_HOST }}
           EC2_USER: ${{ secrets.TEE_EC2_USER }}
@@ -110,57 +110,42 @@ jobs:
           echo "$EC2_KEY" > /tmp/deploy_key && chmod 600 /tmp/deploy_key
           SSH_OPTS="-o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10"
           ssh $SSH_OPTS -i /tmp/deploy_key "$EC2_USER@$EC2_HOST" 'bash -s' << 'REMOTE'
+          set -e
+
+          # Terminate old enclave and stale processes
           sudo pkill -f "socat.*5000" 2>/dev/null || true
           sudo systemctl stop nautilus-bridge.service 2>/dev/null || true
           sudo systemctl stop nautilus-logs.service   2>/dev/null || true
           sudo nitro-cli terminate-enclave --all      || true
-          REMOTE
-          rm -f /tmp/deploy_key
+          sleep 2
 
-      - name: Launch enclave
-        env:
-          EC2_HOST: ${{ secrets.TEE_EC2_HOST }}
-          EC2_USER: ${{ secrets.TEE_EC2_USER }}
-          EC2_KEY: ${{ secrets.TEE_EC2_SSH_KEY }}
-        run: |
-          echo "$EC2_KEY" > /tmp/deploy_key && chmod 600 /tmp/deploy_key
-          SSH_OPTS="-o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10"
-          ssh $SSH_OPTS -i /tmp/deploy_key "$EC2_USER@$EC2_HOST" 'bash -s' << 'REMOTE'
-          set -e
+          # Launch enclave
           sudo nitro-cli run-enclave \
             --cpu-count 2 \
             --memory 4096 \
             --eif-path ~/nautilus-app/out/nitro.eif
-          sudo nitro-cli describe-enclaves | jq -r '.[0] | "CID: \(.EnclaveCID)  State: \(.State)"'
-          REMOTE
-          rm -f /tmp/deploy_key
+          sleep 3
 
-      - name: Setup VSOCK bridge
-        env:
-          EC2_HOST: ${{ secrets.TEE_EC2_HOST }}
-          EC2_USER: ${{ secrets.TEE_EC2_USER }}
-          EC2_KEY: ${{ secrets.TEE_EC2_SSH_KEY }}
-        run: |
-          echo "$EC2_KEY" > /tmp/deploy_key && chmod 600 /tmp/deploy_key
-          SSH_OPTS="-o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=10"
-          ssh $SSH_OPTS -i /tmp/deploy_key "$EC2_USER@$EC2_HOST" 'bash -s' << 'REMOTE'
-          set -e
-          # Wait for enclave CID to become available
+          # Get CID (retry up to 5 times)
           for i in 1 2 3 4 5; do
             CID=$(sudo nitro-cli describe-enclaves | jq -r '.[0].EnclaveCID // empty')
+            STATE=$(sudo nitro-cli describe-enclaves | jq -r '.[0].State // empty')
+            echo "Attempt $i: CID=$CID State=$STATE"
             [ -n "$CID" ] && break
             echo "Waiting for enclave CID... (attempt $i)"
             sleep 2
           done
+
           if [ -z "$CID" ]; then
-            echo "ERROR: Could not get enclave CID"
-            sudo nitro-cli describe-enclaves
+            echo "ERROR: Enclave crashed. Checking dmesg for details:"
+            sudo dmesg | tail -30
             exit 1
           fi
 
           # Kill any stale socat processes
           sudo pkill -f "socat.*5000" 2>/dev/null || true
 
+          # Setup bridge service (TCP:5000 <-> VSOCK:5000)
           sudo tee /etc/systemd/system/nautilus-bridge.service > /dev/null <<EOF
           [Unit]
           Description=Nautilus VSOCK Bridge (TCP:5000 <-> VSOCK:5000)
@@ -175,8 +160,23 @@ jobs:
           WantedBy=multi-user.target
           EOF
 
+          # Setup log collector service
+          sudo tee /etc/systemd/system/nautilus-logs.service > /dev/null <<EOF
+          [Unit]
+          Description=Nautilus Log Collector (VSOCK:5001)
+          After=network.target
+
+          [Service]
+          ExecStart=/usr/bin/socat VSOCK-LISTEN:5001,fork,reuseaddr OPEN:/tmp/enclave.log,creat,append
+          Restart=always
+          RestartSec=2
+
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+
           sudo systemctl daemon-reload
-          sudo systemctl enable --now nautilus-bridge.service
+          sudo systemctl enable --now nautilus-bridge.service nautilus-logs.service
           sleep 2
           sudo systemctl is-active nautilus-bridge.service
           echo "Bridge active: CID=$CID  TCP:5000 -> VSOCK:5000"
