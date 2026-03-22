@@ -1,7 +1,7 @@
 # Nautilus-Python: Python TEE app for AWS Nitro Enclaves.
 #
 # Architecture:
-#   - PyInstaller standalone binary (Python + all deps bundled)
+#   - Full Python 3.12 runtime from Alpine (musl-based, compact)
 #   - socat for VSOCK bridging inside enclave
 #   - nit init handles loopback, NSM, process management
 #   - eif_build packages kernel + initramfs into EIF
@@ -20,23 +20,33 @@ FROM stagex/user-cpio@sha256:9c8bf39001eca8a71d5617b46f8c9b4f7426db41a052f198d73
 FROM stagex/user-nit@sha256:60b6eef4534ea6ea78d9f29e4c7feb27407b615424f20ad8943d807191688be7 AS user-nit
 FROM stagex/user-socat:local@sha256:acef3dacc5b805d0eaaae0c2d13f567bf168620aea98c8d3e60ea5fd4e8c3108 AS user-socat
 
-# --- Build Python standalone binary with PyInstaller ---
+# --- Install Python + deps on Alpine (musl-native, no glibc) ---
 FROM python:3.12-alpine AS python-build
 WORKDIR /app
 
-# Install build deps for pynacl (libsodium) and PyInstaller
-RUN apk add --no-cache \
-    gcc musl-dev libffi-dev libsodium-dev openssl-dev \
-    binutils patchelf
+# Runtime libs needed by pynacl and Python
+RUN apk add --no-cache libffi libsodium openssl
 
+# Install Python deps
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt pyinstaller
+RUN pip install --no-cache-dir -r requirements.txt
 
+# Copy application
 COPY src/ src/
 COPY app.py .
 
-# Create standalone binary (bundles Python interpreter + all deps + libsodium)
-RUN pyinstaller --onefile --strip --name nautilus-server app.py
+# Collect all shared libs the Python binary needs into /collected-libs
+RUN mkdir -p /collected-libs && \
+    for lib in $(ldd /usr/local/bin/python3.12 2>/dev/null | awk '{print $3}' | grep -v '^$'); do \
+        cp -L "$lib" /collected-libs/ 2>/dev/null || true; \
+    done && \
+    # Also grab libsodium and libffi for pynacl
+    cp -L /usr/lib/libsodium.so* /collected-libs/ 2>/dev/null || true && \
+    cp -L /usr/lib/libffi.so* /collected-libs/ 2>/dev/null || true && \
+    cp -L /lib/libz.so* /collected-libs/ 2>/dev/null || true && \
+    cp -L /lib/ld-musl-x86_64.so.1 /collected-libs/ 2>/dev/null || true && \
+    chmod 755 /collected-libs/* && \
+    ls -la /collected-libs/
 
 # --- Assemble initramfs ---
 FROM scratch AS base
@@ -56,30 +66,35 @@ FROM base AS build
 WORKDIR /build_cpio
 ENV KBUILD_BUILD_TIMESTAMP=1
 
-RUN mkdir -p initramfs/etc/ssl/certs initramfs/tmp
+RUN mkdir -p initramfs/etc/ssl/certs initramfs/tmp initramfs/app
 
 # Core system
 COPY --from=core-busybox . initramfs
-COPY --from=core-musl . initramfs
 COPY --from=core-ca-certificates /etc/ssl/certs initramfs/etc/ssl/certs
 COPY --from=user-nit /bin/init initramfs
 
 # socat for VSOCK bridging
 COPY --from=user-socat /bin/socat initramfs/
 
-# Python standalone binary
-COPY --from=python-build /app/dist/nautilus-server initramfs/nautilus-server
-RUN chmod +x initramfs/nautilus-server
+# Python runtime — use Alpine's musl + Python (self-consistent set)
+COPY --from=python-build /collected-libs/ initramfs/lib/
+COPY --from=python-build /usr/local/bin/python3.12 initramfs/usr/local/bin/python3
+COPY --from=python-build /usr/local/lib/python3.12 initramfs/usr/local/lib/python3.12
+RUN chmod 755 initramfs/usr/local/bin/python3 && \
+    chmod 755 initramfs/lib/*
 
-# Shared libs needed by PyInstaller binary (from Alpine build for ABI compatibility)
-COPY --from=python-build /usr/lib/libz.so* initramfs/usr/lib/
-RUN chmod 755 initramfs/usr/lib/libz.so*
+# Python application
+COPY --from=python-build /app/app.py initramfs/app/
+COPY --from=python-build /app/src initramfs/app/src/
 
-# Run script: start socat bridge then exec Python server
+# Run script: start socat bridge then exec Python app
 COPY <<-'RUNEOF' initramfs/run.sh
 #!/bin/sh
+export LD_LIBRARY_PATH=/lib:/usr/lib
+export PYTHONPATH=/app:/usr/local/lib/python3.12/site-packages
+export PYTHONHOME=/usr/local
 socat VSOCK-LISTEN:5000,fork,reuseaddr TCP:localhost:5000 &
-exec /nautilus-server
+exec /usr/local/bin/python3 /app/app.py
 RUNEOF
 RUN chmod +x initramfs/run.sh
 
@@ -87,8 +102,8 @@ RUN chmod +x initramfs/run.sh
 COPY <<-EOF initramfs/etc/environment
 SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 SSL_CERT_DIR=/etc/ssl/certs
-LD_LIBRARY_PATH=/usr/lib:/lib
-PATH=/bin:/sbin:/usr/bin:/usr/sbin:/
+LD_LIBRARY_PATH=/lib:/usr/lib
+PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin
 EOF
 
 # Build cpio
@@ -107,7 +122,7 @@ RUN <<-EOF
     > /build_cpio/rootfs.cpio
 EOF
 
-# Build EIF — nit runs our shell script which starts socat + Python server
+# Build EIF — nit runs our shell script which starts socat + Python
 WORKDIR /build_eif
 RUN eif_build \
 	--kernel /bzImage \
