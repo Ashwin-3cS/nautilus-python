@@ -10,8 +10,9 @@ import ctypes.util
 import os
 import struct
 
-# NSM ioctl request type
-NSM_IOCTL_REQUEST = 0xC008_0E00  # _IOWR(0x0E, 0, 8)
+# NSM ioctl request type — must match kernel driver:
+# _IOWR(0x0A, 0, 32) where 32 = sizeof(struct iovec) * 2
+NSM_IOCTL_REQUEST = 0xC020_0A00
 NSM_DEV_PATH = "/dev/nsm"
 
 
@@ -65,21 +66,26 @@ def get_attestation(public_key: bytes, nonce: bytes = b"") -> bytes:
         req_buf = ctypes.create_string_buffer(req_bytes)
         resp_buf = ctypes.create_string_buffer(16384)  # 16KB response buffer
 
-        # Pack the ioctl struct: request_ptr(u32) + request_len(u32) + response_ptr(u32) + response_len(u32)
-        # On 64-bit, we need pointer-sized fields
+        # NSM message is two iovec structs (request + response):
+        # struct iovec { void *iov_base; size_t iov_len; } — 16 bytes each on x86_64
+        # Total struct = 32 bytes, matching the ioctl size field
+        class Iovec(ctypes.Structure):
+            _fields_ = [
+                ("base", ctypes.c_void_p),
+                ("len", ctypes.c_uint64),
+            ]
+
         class NsmMessage(ctypes.Structure):
             _fields_ = [
-                ("request", ctypes.c_char_p),
-                ("request_len", ctypes.c_uint32),
-                ("response", ctypes.c_char_p),
-                ("response_len", ctypes.c_uint32),
+                ("request", Iovec),
+                ("response", Iovec),
             ]
 
         msg = NsmMessage()
-        msg.request = ctypes.cast(req_buf, ctypes.c_char_p)
-        msg.request_len = len(req_bytes)
-        msg.response = ctypes.cast(resp_buf, ctypes.c_char_p)
-        msg.response_len = 16384
+        msg.request.base = ctypes.cast(req_buf, ctypes.c_void_p).value
+        msg.request.len = len(req_bytes)
+        msg.response.base = ctypes.cast(resp_buf, ctypes.c_void_p).value
+        msg.response.len = 16384
 
         # Load libc for ioctl
         libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
@@ -89,7 +95,7 @@ def get_attestation(public_key: bytes, nonce: bytes = b"") -> bytes:
             raise OSError(f"NSM ioctl failed with errno {errno}")
 
         # Extract response
-        resp_data = resp_buf.raw[:msg.response_len]
+        resp_data = resp_buf.raw[:msg.response.len]
         resp = cbor2.loads(resp_data)
 
         if "Attestation" in resp:
