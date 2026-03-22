@@ -43,10 +43,12 @@ RUN mkdir -p /collected-libs && \
     # Also grab libsodium and libffi for pynacl
     cp -L /usr/lib/libsodium.so* /collected-libs/ 2>/dev/null || true && \
     cp -L /usr/lib/libffi.so* /collected-libs/ 2>/dev/null || true && \
-    cp -L /lib/libz.so* /collected-libs/ 2>/dev/null || true && \
+    # libz can be in /lib/, /usr/lib/, or /usr/lib/ — find it wherever Alpine puts it
+    find / -name 'libz.so*' -exec cp -L {} /collected-libs/ \; 2>/dev/null || true && \
     cp -L /lib/ld-musl-x86_64.so.1 /collected-libs/ 2>/dev/null || true && \
     chmod 755 /collected-libs/* && \
-    ls -la /collected-libs/
+    echo "=== Collected libs ===" && ls -la /collected-libs/ && \
+    echo "=== libz check ===" && ls -la /collected-libs/libz* 2>/dev/null || echo "WARNING: libz not found!"
 
 # --- Assemble initramfs ---
 FROM scratch AS base
@@ -83,7 +85,17 @@ COPY --from=python-build /usr/local/bin/python3.12 initramfs/usr/local/bin/pytho
 COPY --from=python-build /usr/local/lib/python3.12 initramfs/usr/local/lib/python3.12
 RUN chmod 755 initramfs/usr/local/bin/python3 && \
     chmod 755 initramfs/lib/* && \
-    find initramfs/usr/local/lib/python3.12/lib-dynload -name '*.so' -exec chmod 755 {} \;
+    find initramfs/usr/local/lib/python3.12/lib-dynload -name '*.so' -exec chmod 755 {} \; && \
+    # musl dynamic linker config — tells musl where to find shared libs
+    echo "/lib:/usr/lib:/usr/local/lib" > initramfs/etc/ld-musl-x86_64.path && \
+    # Symlink libs into /usr/lib as well for any hardcoded rpaths
+    mkdir -p initramfs/usr/lib && \
+    for f in initramfs/lib/*.so*; do \
+        bn=$(basename "$f"); \
+        [ ! -e "initramfs/usr/lib/$bn" ] && ln -s "/lib/$bn" "initramfs/usr/lib/$bn"; \
+    done && \
+    echo "=== initramfs /lib/ ===" && ls -la initramfs/lib/ && \
+    echo "=== initramfs /usr/lib/ ===" && ls -la initramfs/usr/lib/
 
 # Python application
 COPY --from=python-build /app/app.py initramfs/app/
