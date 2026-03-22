@@ -5,6 +5,9 @@
 
 set -e
 
+# Bring up loopback interface (required inside Nitro Enclave — no init system)
+ip link set lo up 2>/dev/null || true
+
 # Start socat: listen on VSOCK port 5000, forward to Python app on localhost:5000
 socat VSOCK-LISTEN:5000,fork,reuseaddr TCP-CONNECT:127.0.0.1:5000 &
 SOCAT_PID=$!
