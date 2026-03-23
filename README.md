@@ -6,13 +6,14 @@ Part of the [nautilus-ops](https://github.com/Ashwin-3cS/nautilus-ops/) ecosyste
 
 ## How It Works
 
-The app runs a Python HTTP server inside a Nitro Enclave. On startup, it generates an ephemeral Ed25519 keypair and exposes three endpoints:
+The app runs a Python HTTP server inside a Nitro Enclave. On startup, it generates an ephemeral Ed25519 keypair and exposes four endpoints:
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/health` | GET | Returns `{"status": "ok", "template": "python"}` |
 | `/attestation` | GET | Returns NSM attestation document with the public key embedded |
 | `/sign` | POST | Signs the request body with Ed25519, returns `{"signature": "<hex>"}` |
+| `/logs` | GET | Returns recent log lines from the in-memory ring buffer |
 
 The signing pattern uses `blake2b256(data)` before Ed25519 signing, compatible with the on-chain `verify_signed_data<T>` function.
 
@@ -33,7 +34,8 @@ EC2 Instance (Nitro-enabled)
 │  │    python3 app.py                      │  │
 │  │      ├── /health                       │  │
 │  │      ├── /attestation (NSM ioctl)      │  │
-│  │      └── /sign (Ed25519)               │  │
+│  │      ├── /sign (Ed25519)               │  │
+│  │      └── /logs (ring buffer)           │  │
 │  └────────────────────────────────────────┘  │
 └──────────────────────────────────────────────┘
 ```
@@ -44,7 +46,7 @@ The enclave has no network access — communication happens over VSOCK. A socat 
 
 ```
 nautilus-python/
-├── app.py                # HTTP server — routes, startup, keypair generation
+├── app.py                # HTTP server — routes, startup, keypair generation, LogBuffer
 ├── src/
 │   ├── crypto.py         # Ed25519 keypair (pynacl) — keygen, sign, blake2b256
 │   └── nsm.py            # NSM interface — ioctl to /dev/nsm, CBOR request/response
@@ -99,6 +101,29 @@ nautilus register-enclave --host <EC2_IP>
 nautilus verify-signature --host <EC2_IP> --enclave-id <ENCLAVE_ID> --data "hello"
 ```
 
+### `GET /logs`
+```
+GET /logs?lines=50
+```
+```json
+{
+  "lines": [
+    "2025-03-23T10:00:01Z INFO  Mode: enclave",
+    "2025-03-23T10:00:01Z INFO  Port: 5000",
+    "2025-03-23T10:00:05Z INFO  GET /health"
+  ],
+  "count": 3
+}
+```
+
+Returns the most recent `lines` log entries (default: 100, max: 1000) from a thread-safe in-memory ring buffer. Startup events and all request handlers are captured automatically.
+
+Use from the CLI:
+```bash
+nautilus logs --host <EC2_IP> --template python -n 50
+nautilus logs --host <EC2_IP> --template python --follow
+```
+
 ## Development
 
 Run locally without an enclave (uses mock NSM):
@@ -109,6 +134,7 @@ python app.py
 
 # In another terminal
 curl http://localhost:5000/health
+curl http://localhost:5000/logs?lines=10
 curl http://localhost:5000/attestation
 curl -X POST -d "hello" http://localhost:5000/sign
 ```
